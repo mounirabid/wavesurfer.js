@@ -1,6 +1,6 @@
 // With pre-decoded audio data
 
-import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js'
+import WaveSurfer from 'wavesurfer.js'
 
 const wavesurfer = WaveSurfer.create({
   container: document.body,
@@ -27,6 +27,7 @@ const wavesurfer = WaveSurfer.create({
       0.02300390601158142, 0.007677287794649601, 0.015354577451944351, 0.007677287794649601, 0.007677288725972176,
     ],
   ],
+  duration: 22,
 })
 
 wavesurfer.on('interaction', () => {

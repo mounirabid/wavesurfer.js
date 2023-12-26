@@ -62,7 +62,7 @@ export type WaveSurferOptions = {
   /** Decoding sample rate. Doesn't affect the playback. Defaults to 8000 */
   sampleRate?: number
   /** Render each audio channel as a separate waveform */
-  splitChannels?: WaveSurferOptions[]
+  splitChannels?: Partial<WaveSurferOptions>[]
   /** Stretch the waveform to the full height */
   normalize?: boolean
   /** The list of plugins to initialize on start */
@@ -165,13 +165,11 @@ class WaveSurfer extends Player<WaveSurferEvents> {
     this.initTimerEvents()
     this.initPlugins()
 
-    // Load audio if URL is passed or an external media with an src
-    const url = this.options.url || this.getSrc()
-    if (url) {
+    // Load audio if URL or an external media with an src is passed,
+    // of render w/o audio if pre-decoded peaks and duration are provided
+    const url = this.options.url || this.getSrc() || ''
+    if (url || (this.options.peaks && this.options.duration)) {
       this.load(url, this.options.peaks, this.options.duration)
-    } else if (this.options.peaks && this.options.duration) {
-      // If pre-decoded peaks and duration are provided, render a waveform w/o loading audio
-      this.loadPredecoded()
     }
   }
 
@@ -188,6 +186,11 @@ class WaveSurfer extends Player<WaveSurferEvents> {
   }
 
   private initPlayerEvents() {
+    if (this.isPlaying()) {
+      this.emit('play')
+      this.timer.start()
+    }
+
     this.mediaSubscriptions.push(
       this.onMediaEvent('timeupdate', () => {
         const currentTime = this.getCurrentTime()
@@ -329,21 +332,6 @@ class WaveSurfer extends Player<WaveSurferEvents> {
     return this.plugins
   }
 
-  private async loadPredecoded() {
-    if (this.options.peaks && this.options.duration) {
-      this.decodedData = Decoder.createBuffer(this.options.peaks, this.options.duration)
-      await Promise.resolve() // wait for event listeners to subscribe
-      this.renderDecoded()
-    }
-  }
-
-  private async renderDecoded() {
-    if (this.decodedData) {
-      this.emit('decode', this.getDuration())
-      this.renderer.render(this.decodedData)
-    }
-  }
-
   private async loadAudio(url: string, blob?: Blob, channelData?: WaveSurferOptions['peaks'], duration?: number) {
     this.emit('load', url)
 
@@ -362,22 +350,24 @@ class WaveSurfer extends Player<WaveSurferEvents> {
 
     // Wait for the audio duration
     // It should be a promise to allow event listeners to subscribe to the ready and decode events
-    duration =
+    const audioDuration =
       (await Promise.resolve(duration || this.getDuration())) ||
       (await new Promise((resolve) => {
         this.onceMediaEvent('loadedmetadata', () => resolve(this.getDuration()))
-      })) ||
-      (await Promise.resolve(0))
+      }))
 
     // Decode the audio data or use user-provided peaks
     if (channelData) {
-      this.decodedData = Decoder.createBuffer(channelData, duration)
+      this.decodedData = Decoder.createBuffer(channelData, audioDuration || 0)
     } else if (blob) {
       const arrayBuffer = await blob.arrayBuffer()
       this.decodedData = await Decoder.decode(arrayBuffer, this.options.sampleRate)
     }
 
-    this.renderDecoded()
+    if (this.decodedData) {
+      this.emit('decode', this.getDuration())
+      this.renderer.render(this.decodedData)
+    }
 
     this.emit('ready', this.getDuration())
   }
@@ -419,7 +409,11 @@ class WaveSurfer extends Player<WaveSurferEvents> {
       const sampleSize = Math.round(channel.length / maxLength)
       for (let i = 0; i < maxLength; i++) {
         const sample = channel.slice(i * sampleSize, (i + 1) * sampleSize)
-        const max = Math.max(...sample)
+        let max = 0
+        for (let x = 0; x < sample.length; x++) {
+          const n = sample[x]
+          if (Math.abs(n) > Math.abs(max)) max = n
+        }
         data.push(Math.round(max * precision) / precision)
       }
       peaks.push(data)
@@ -464,7 +458,7 @@ class WaveSurfer extends Player<WaveSurferEvents> {
     this.setTime(this.getCurrentTime() + seconds)
   }
 
-  /** Empty the waveform by loading a tiny silent audio */
+  /** Empty the waveform */
   public empty() {
     this.load('', [[0]], 0.001)
   }
@@ -474,6 +468,24 @@ class WaveSurfer extends Player<WaveSurferEvents> {
     this.unsubscribePlayerEvents()
     super.setMediaElement(element)
     this.initPlayerEvents()
+  }
+
+  /**
+   * Export the waveform image as a data-URI or a blob.
+   *
+   * @param format The format of the exported image, can be `image/png`, `image/jpeg`, `image/webp` or any other format supported by the browser.
+   * @param quality The quality of the exported image, for `image/jpeg` or `image/webp`. Must be between 0 and 1.
+   * @param type The type of the exported image, can be `dataURL` (default) or `blob`.
+   * @returns A promise that resolves with an array of data-URLs or blobs, one for each canvas element.
+   */
+  public async exportImage(format: string, quality: number, type: 'dataURL'): Promise<string[]>
+  public async exportImage(format: string, quality: number, type: 'blob'): Promise<Blob[]>
+  public async exportImage(
+    format = 'image/png',
+    quality = 1,
+    type: 'dataURL' | 'blob' = 'dataURL',
+  ): Promise<string[] | Blob[]> {
+    return this.renderer.exportImage(format, quality, type)
   }
 
   /** Unmount wavesurfer */

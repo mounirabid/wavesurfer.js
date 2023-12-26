@@ -1,7 +1,7 @@
 // Regions plugin
 
-import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js'
-import RegionsPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.esm.js'
+import WaveSurfer from 'wavesurfer.js'
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js'
 
 // Create an instance of WaveSurfer
 const ws = WaveSurfer.create({
@@ -76,9 +76,11 @@ document.querySelector('input[type="checkbox"]').onclick = (e) => {
 {
   let activeRegion = null
   wsRegions.on('region-in', (region) => {
+    console.log('region-in', region)
     activeRegion = region
   })
   wsRegions.on('region-out', (region) => {
+    console.log('region-out', region)
     if (activeRegion === region) {
       if (loop) {
         region.play()

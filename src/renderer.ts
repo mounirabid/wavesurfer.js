@@ -21,7 +21,7 @@ class Renderer extends EventEmitter<RendererEvents> {
   private progressWrapper: HTMLElement
   private cursor: HTMLElement
   private timeouts: Array<{ timeout?: ReturnType<typeof setTimeout> }> = []
-  private isScrolling = false
+  private isScrollable = false
   private audioData: AudioBuffer | null = null
   private resizeObserver: ResizeObserver | null = null
   private isDragging = false
@@ -122,11 +122,11 @@ class Renderer extends EventEmitter<RendererEvents> {
     )
   }
 
-  private getHeight(): number {
+  private getHeight(optionsHeight?: WaveSurferOptions['height']): number {
     const defaultHeight = 128
-    if (this.options.height == null) return defaultHeight
-    if (!isNaN(Number(this.options.height))) return Number(this.options.height)
-    if (this.options.height === 'auto') return this.parent.clientHeight || defaultHeight
+    if (optionsHeight == null) return defaultHeight
+    if (!isNaN(Number(optionsHeight))) return Number(optionsHeight)
+    if (optionsHeight === 'auto') return this.parent.clientHeight || defaultHeight
     return defaultHeight
   }
 
@@ -164,7 +164,7 @@ class Renderer extends EventEmitter<RendererEvents> {
           z-index: 2;
         }
         :host .canvases {
-          min-height: ${this.getHeight()}px;
+          min-height: ${this.getHeight(this.options.height)}px;
         }
         :host .canvases > div {
           position: relative;
@@ -259,7 +259,8 @@ class Renderer extends EventEmitter<RendererEvents> {
 
     const canvasElement = document.createElement('canvas')
     const ctx = canvasElement.getContext('2d') as CanvasRenderingContext2D
-    const gradient = ctx.createLinearGradient(0, 0, 0, canvasElement.height)
+    const gradientHeight = canvasElement.height * (window.devicePixelRatio || 1)
+    const gradient = ctx.createLinearGradient(0, 0, 0, gradientHeight)
 
     const colorStopPercentage = 1 / (color.length - 1)
     color.forEach((color, index) => {
@@ -448,7 +449,7 @@ class Renderer extends EventEmitter<RendererEvents> {
   private renderChannel(channelData: Array<Float32Array | number[]>, options: WaveSurferOptions, width: number) {
     // A container for canvases
     const canvasContainer = document.createElement('div')
-    const height = this.getHeight()
+    const height = this.getHeight(options.height)
     canvasContainer.style.height = `${height}px`
     this.canvasWrapper.style.minHeight = `${height}px`
     this.canvasWrapper.appendChild(canvasContainer)
@@ -526,7 +527,6 @@ class Renderer extends EventEmitter<RendererEvents> {
     // Clear the canvases
     this.canvasWrapper.innerHTML = ''
     this.progressWrapper.innerHTML = ''
-    this.wrapper.style.width = ''
 
     // Width
     if (this.options.width != null) {
@@ -540,8 +540,8 @@ class Renderer extends EventEmitter<RendererEvents> {
     const scrollWidth = Math.ceil(audioData.duration * (this.options.minPxPerSec || 0))
 
     // Whether the container should scroll
-    this.isScrolling = scrollWidth > parentWidth
-    const useParentWidth = this.options.fillParent && !this.isScrolling
+    this.isScrollable = scrollWidth > parentWidth
+    const useParentWidth = this.options.fillParent && !this.isScrollable
     // Width of the waveform in pixels
     const width = (useParentWidth ? parentWidth : scrollWidth) * pixelRatio
 
@@ -549,7 +549,7 @@ class Renderer extends EventEmitter<RendererEvents> {
     this.wrapper.style.width = useParentWidth ? '100%' : `${scrollWidth}px`
 
     // Set additional styles
-    this.scrollContainer.style.overflowX = this.isScrolling ? 'auto' : 'hidden'
+    this.scrollContainer.style.overflowX = this.isScrollable ? 'auto' : 'hidden'
     this.scrollContainer.classList.toggle('noScrollbar', !!this.options.hideScrollbar)
     this.cursor.style.backgroundColor = `${this.options.cursorColor || this.options.progressColor}`
     this.cursor.style.width = `${this.options.cursorWidth}px`
@@ -578,14 +578,17 @@ class Renderer extends EventEmitter<RendererEvents> {
     if (!this.audioData) return
 
     // Remember the current cursor position
+    const { scrollWidth } = this.scrollContainer
     const oldCursorPosition = this.progressWrapper.clientWidth
 
-    // Set the new zoom level and re-render the waveform
+    // Re-render the waveform
     this.render(this.audioData)
 
     // Adjust the scroll position so that the cursor stays in the same place
-    const newCursortPosition = this.progressWrapper.clientWidth
-    this.scrollContainer.scrollLeft += newCursortPosition - oldCursorPosition
+    if (this.isScrollable && scrollWidth !== this.scrollContainer.scrollWidth) {
+      const newCursorPosition = this.progressWrapper.clientWidth
+      this.scrollContainer.scrollLeft += newCursorPosition - oldCursorPosition
+    }
   }
 
   zoom(minPxPerSec: number) {
@@ -594,38 +597,37 @@ class Renderer extends EventEmitter<RendererEvents> {
   }
 
   private scrollIntoView(progress: number, isPlaying = false) {
-    const { clientWidth, scrollLeft, scrollWidth } = this.scrollContainer
-    const progressWidth = scrollWidth * progress
-    const center = clientWidth / 2
-    const minScroll = isPlaying && this.options.autoCenter && !this.isDragging ? center : clientWidth
+    const { scrollLeft, scrollWidth, clientWidth } = this.scrollContainer
+    const progressWidth = progress * scrollWidth
+    const startEdge = scrollLeft
+    const endEdge = scrollLeft + clientWidth
+    const middle = clientWidth / 2
 
-    if (progressWidth > scrollLeft + minScroll || progressWidth < scrollLeft) {
-      // Scroll to the center
-      if (this.options.autoCenter && !this.isDragging) {
-        // If the cursor is in viewport but not centered, scroll to the center slowly
-        const minDiff = center / 20
-        if (progressWidth - (scrollLeft + center) >= minDiff && progressWidth < scrollLeft + clientWidth) {
-          this.scrollContainer.scrollLeft += minDiff
-        } else {
-          // Otherwise, scroll to the center immediately
-          this.scrollContainer.scrollLeft = progressWidth - center
-        }
-      } else if (this.isDragging) {
-        // Scroll just a little bit to allow for some space between the cursor and the edge
-        const gap = 10
-        this.scrollContainer.scrollLeft =
-          progressWidth < scrollLeft ? progressWidth - gap : progressWidth - clientWidth + gap
-      } else {
-        // Scroll to the beginning
-        this.scrollContainer.scrollLeft = progressWidth
+    if (this.isDragging) {
+      // Scroll when dragging close to the edge of the viewport
+      const minGap = 30
+      if (progressWidth + minGap > endEdge) {
+        this.scrollContainer.scrollLeft += minGap
+      } else if (progressWidth - minGap < startEdge) {
+        this.scrollContainer.scrollLeft -= minGap
+      }
+    } else {
+      if (progressWidth < startEdge || progressWidth > endEdge) {
+        this.scrollContainer.scrollLeft = progressWidth - (this.options.autoCenter ? middle : 0)
+      }
+
+      // Keep the cursor centered when playing
+      const center = progressWidth - scrollLeft - middle
+      if (isPlaying && this.options.autoCenter && center > 0) {
+        this.scrollContainer.scrollLeft += Math.min(center, 10)
       }
     }
 
     // Emit the scroll event
     {
-      const { scrollLeft } = this.scrollContainer
-      const startX = scrollLeft / scrollWidth
-      const endX = (scrollLeft + clientWidth) / scrollWidth
+      const newScroll = this.scrollContainer.scrollLeft
+      const startX = newScroll / scrollWidth
+      const endX = (newScroll + clientWidth) / scrollWidth
       this.emit('scroll', startX, endX)
     }
   }
@@ -638,9 +640,37 @@ class Renderer extends EventEmitter<RendererEvents> {
     this.cursor.style.left = `${percents}%`
     this.cursor.style.marginLeft = Math.round(percents) === 100 ? `-${this.options.cursorWidth}px` : ''
 
-    if (this.isScrolling && this.options.autoScroll) {
+    if (this.isScrollable && this.options.autoScroll) {
       this.scrollIntoView(progress, isPlaying)
     }
+  }
+
+  async exportImage(format: string, quality: number, type: 'dataURL' | 'blob'): Promise<string[] | Blob[]> {
+    const canvases = this.canvasWrapper.querySelectorAll('canvas')
+    if (!canvases.length) {
+      throw new Error('No waveform data')
+    }
+
+    // Data URLs
+    if (type === 'dataURL') {
+      const images = Array.from(canvases).map((canvas) => canvas.toDataURL(format, quality))
+      return Promise.resolve(images)
+    }
+
+    // Blobs
+    return Promise.all(
+      Array.from(canvases).map((canvas) => {
+        return new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (blob) => {
+              blob ? resolve(blob) : reject(new Error('Could not export image'))
+            },
+            format,
+            quality,
+          )
+        })
+      }),
+    )
   }
 }
 
